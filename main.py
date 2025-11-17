@@ -28,6 +28,12 @@ SHEETS_IDS = [s.strip() for s in os.getenv('SHEETS_IDS', '').split(',') if s.str
 SERVICE_ACCOUNT_JSON = os.getenv('GOOGLE_SERVICE_ACCOUNT_JSON')
 DEFAULT_USER = os.getenv('DEFAULT_USER_NAME', '').strip()
 
+logger.info(
+    "Env check: SERVICE_ACCOUNT_JSON_BASE64 present=%s, GOOGLE_SERVICE_ACCOUNT_JSON=%s",
+    bool(os.getenv('SERVICE_ACCOUNT_JSON_BASE64') or os.getenv('SERVICE_ACCOUNT_JSON')),
+    SERVICE_ACCOUNT_JSON or 'not set'
+)
+
 DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
 USERS_FILE = os.path.join(DATA_DIR, 'users.json')
 
