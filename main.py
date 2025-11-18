@@ -81,6 +81,31 @@ def calculate_window_days():
     return (today - start).days + 1
 
 
+def _month_start(dt: datetime) -> datetime:
+    return dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def get_window_range(window: str) -> tuple[datetime, datetime]:
+    """Return start/end datetimes for named windows."""
+    today = datetime.utcnow()
+    this_month_start = _month_start(today)
+
+    if window == 'first':
+        prev_month_last = this_month_start - timedelta(days=1)
+        start = prev_month_last.replace(day=28, hour=0, minute=0, second=0, microsecond=0)
+        end = this_month_start.replace(day=7, hour=23, minute=59, second=59, microsecond=999999)
+    elif window == 'second':
+        start = this_month_start.replace(day=8, hour=0, minute=0, second=0, microsecond=0)
+        end = this_month_start.replace(day=17, hour=23, minute=59, second=59, microsecond=999999)
+    elif window == 'third':
+        start = this_month_start.replace(day=18, hour=0, minute=0, second=0, microsecond=0)
+        end = this_month_start.replace(day=27, hour=23, minute=59, second=59, microsecond=999999)
+    else:
+        raise ValueError(f"Unknown window name: {window}")
+
+    return start, end
+
+
 def ensure_data_dir():
     """Create data directory and users file if they don't exist"""
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -168,7 +193,12 @@ def parse_sheet_date(raw: str):
     return None
 
 
-def fetch_sales_from_sheets(user_name: str, days: int = 1) -> Dict[str, float]:
+def fetch_sales_from_sheets(
+    user_name: str,
+    days: int = 1,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
+) -> Dict[str, float]:
     """Fetch sales data from Google Sheets for specified user and time period"""
     if not SERVICE_ACCOUNT_JSON or not os.path.exists(SERVICE_ACCOUNT_JSON):
         logger.warning('Service account JSON missing; returning dummy data')
@@ -188,8 +218,17 @@ def fetch_sales_from_sheets(user_name: str, days: int = 1) -> Dict[str, float]:
         logger.error(f'Failed to create Google Sheets service: {e}')
         return {'total': 0.0, 'per_sheet': {}, 'error': f'Authentication error: {str(e)}'}
 
-    since = datetime.utcnow() - timedelta(days=days - 1)
-    since = since.replace(hour=0, minute=0, second=0, microsecond=0)
+    if start_date:
+        since = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+    else:
+        since = datetime.utcnow() - timedelta(days=days - 1)
+        since = since.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    if end_date:
+        until = end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+    else:
+        until = datetime.utcnow()
+        until = until.replace(hour=23, minute=59, second=59, microsecond=999999)
     totals = 0.0
     breakdown: Dict[str, float] = {}
     
@@ -268,7 +307,7 @@ def fetch_sales_from_sheets(user_name: str, days: int = 1) -> Dict[str, float]:
                     sample_dates.append(sale_date.strftime('%Y-%m-%d'))
                 
                 # Check if this sale matches our criteria
-                if sale_date >= since:
+                if since <= sale_date <= until:
                     try:
                         # Clean up sale amount
                         clean_sale = sale_str.replace('$', '').replace(',', '').strip()
@@ -298,7 +337,7 @@ def fetch_sales_from_sheets(user_name: str, days: int = 1) -> Dict[str, float]:
         'total_rows': total_rows,
         'name_matches': name_matches,
         'matching_sales': matching_sales,
-        'date_range': f"{since.strftime('%Y-%m-%d')} to now",
+        'date_range': f"{since.strftime('%Y-%m-%d')} to {until.strftime('%Y-%m-%d')}",
         'sample_dates': ', '.join(sample_dates[:5]) if sample_dates else 'None found'
     }
 
@@ -320,6 +359,37 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome_msg)
 
 
+def build_sales_message(user_name: str, data: Dict[str, float], descriptor: str) -> str:
+    """Compose sales summary text."""
+    if 'error' in data:
+        return (
+            f"❌ Error: {data['error']}\n\n"
+            "Please contact the bot administrator."
+        )
+
+    total = data['total']
+    debug_info = data.get('debug_info', {})
+
+    if total > 0:
+        msg = f"💰 {user_name}'s sales for {descriptor}:\n\n"
+        msg += f"**Total: ${total:.2f}**\n\n"
+        if data['per_sheet']:
+            msg += "Breakdown by sheet:\n"
+            for sheet_id, amount in data['per_sheet'].items():
+                msg += f"• Sheet ...{sheet_id[-8:]}: ${amount:.2f}\n"
+        if debug_info:
+            msg += f"\n📊 Debug: {debug_info.get('matching_sales', 0)} sales found"
+    else:
+        msg = f"📊 {user_name}: No sales found for {descriptor}\n\n"
+        if debug_info:
+            msg += "Debug info:\n"
+            msg += f"• Total rows checked: {debug_info.get('total_rows', 0)}\n"
+            msg += f"• Rows with your name: {debug_info.get('name_matches', 0)}\n"
+            msg += f"• Date range: {debug_info.get('date_range', 'Unknown')}\n"
+            msg += f"• Sample dates found: {debug_info.get('sample_dates', 'None')}"
+    return msg
+
+
 async def mysales(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /mysales command"""
     user_name = resolve_user_name(update.effective_user)
@@ -328,43 +398,38 @@ async def mysales(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🔍 Checking sales for {user_name}...")
     
     data = fetch_sales_from_sheets(user_name=user_name, days=days)
-    
-    if 'error' in data:
-        await update.message.reply_text(
-            f"❌ Error: {data['error']}\n\n"
-            "Please contact the bot administrator."
-        )
-        return
-    
-    total = data['total']
-    debug_info = data.get('debug_info', {})
-    
-    if total > 0:
-        msg = f"💰 {user_name}'s sales for the current window ({days} days):\n\n"
-        msg += f"**Total: ${total:.2f}**\n\n"
-        
-        if data['per_sheet']:
-            msg += "Breakdown by sheet:\n"
-            for sheet_id, amount in data['per_sheet'].items():
-                msg += f"• Sheet ...{sheet_id[-8:]}: ${amount:.2f}\n"
-        
-        if debug_info:
-            msg += f"\n📊 Debug: {debug_info.get('matching_sales', 0)} sales found"
-    else:
-        msg = f"📊 {user_name}: No sales found for the current window ({days} days)\n\n"
-        if debug_info:
-            msg += f"Debug info:\n"
-            msg += f"• Total rows checked: {debug_info.get('total_rows', 0)}\n"
-            msg += f"• Rows with your name: {debug_info.get('name_matches', 0)}\n"
-            msg += f"• Date range: {debug_info.get('date_range', 'Unknown')}\n"
-            msg += f"• Sample dates found: {debug_info.get('sample_dates', 'None')}"
-    
-    await update.message.reply_text(msg)
+    descriptor = f"the current window ({days} days)"
+    await update.message.reply_text(build_sales_message(user_name, data, descriptor))
 
 
 async def week(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /week command (alias for /mysales)"""
     await mysales(update, context)
+
+
+async def _send_window_sales(update: Update, label: str, start: datetime, end: datetime):
+    """Common logic for explicit window commands."""
+    user_name = resolve_user_name(update.effective_user)
+    descriptor = f"{label} window ({start.strftime('%Y-%m-%d')} - {end.strftime('%Y-%m-%d')})"
+
+    await update.message.reply_text(f"🔍 Checking {descriptor} for {user_name}...")
+    data = fetch_sales_from_sheets(user_name=user_name, start_date=start, end_date=end)
+    await update.message.reply_text(build_sales_message(user_name, data, descriptor))
+
+
+async def first_window(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    start, end = get_window_range('first')
+    await _send_window_sales(update, "the 28th-7th", start, end)
+
+
+async def second_window(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    start, end = get_window_range('second')
+    await _send_window_sales(update, "the 8th-17th", start, end)
+
+
+async def third_window(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    start, end = get_window_range('third')
+    await _send_window_sales(update, "the 18th-27th", start, end)
 
 
 async def setname(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -543,6 +608,9 @@ def main():
     app.add_handler(CommandHandler('start', start))
     app.add_handler(CommandHandler('mysales', mysales))
     app.add_handler(CommandHandler('week', week))
+    app.add_handler(CommandHandler('first', first_window))
+    app.add_handler(CommandHandler('second', second_window))
+    app.add_handler(CommandHandler('third', third_window))
     app.add_handler(CommandHandler('setname', setname))
     app.add_handler(CommandHandler('debug', debug))
     app.add_handler(CommandHandler('testdate', testdate))
