@@ -349,11 +349,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command"""
     welcome_msg = (
         "🎉 Welcome to SaleCounter Bot!\n\n"
-        "Commands:\n"
-        "/setname <Your Sheet Name> - Set your name as it appears in sheets\n"
-        "/mysales - Check your sales for current window\n"
-        "/week - Same as /mysales\n"
-        "/debug - Show configuration and sample data\n\n"
+        "👉 First step: set your sheet name with `/setname <Name exactly as in column A>`.\n"
+        "Example: `/setname Oguzhan Tontas`\n\n"
+        "Available commands:\n"
+        "• `/mysales` – current rolling window.\n"
+        "• `/first` – sales from the 28th of last month to the 7th of this month.\n"
+        "• `/second` – sales from the 8th to the 17th of this month.\n"
+        "• `/third` – sales from the 18th to the 27th of this month.\n"
+        "• `/week` – alias for `/mysales`.\n"
+        "• `/debug`, `/testdate`, `/showrow` – troubleshooting tools.\n\n"
         f"Current user: {resolve_user_name(update.effective_user)}"
     )
     await update.message.reply_text(welcome_msg)
@@ -438,8 +442,9 @@ async def setname(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current_name = resolve_user_name(update.effective_user)
         await update.message.reply_text(
             f"Current name: {current_name}\n\n"
-            "Usage: /setname <name as it appears in the sheet>\n"
-            "Example: /setname John Smith"
+            "Usage: `/setname <name as it appears in the sheet>`\n"
+            "This must match column A exactly (case-insensitive).\n"
+            "Example: `/setname Oguzhan Tontas`"
         )
         return
     
