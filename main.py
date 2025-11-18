@@ -28,6 +28,13 @@ SHEETS_IDS = [s.strip() for s in os.getenv('SHEETS_IDS', '').split(',') if s.str
 SERVICE_ACCOUNT_JSON = os.getenv('GOOGLE_SERVICE_ACCOUNT_JSON')
 DEFAULT_USER = os.getenv('DEFAULT_USER_NAME', '').strip()
 
+# Map Google sheets to display-ready model names for breakdown output.
+MODEL_NAMES = ['Kensley', 'Skyler', 'Mila']
+MODEL_LOOKUP = {
+    sheet_id: MODEL_NAMES[idx]
+    for idx, sheet_id in enumerate(SHEETS_IDS[:len(MODEL_NAMES)])
+}
+
 logger.info(
     "Env check: SERVICE_ACCOUNT_JSON_BASE64 present=%s, GOOGLE_SERVICE_ACCOUNT_JSON=%s",
     bool(os.getenv('SERVICE_ACCOUNT_JSON_BASE64') or os.getenv('SERVICE_ACCOUNT_JSON')),
@@ -345,6 +352,17 @@ def fetch_sales_from_sheets(
     return {'total': totals, 'per_sheet': breakdown, 'debug_info': debug_info}
 
 
+def build_model_breakdown(per_sheet: Dict[str, float]) -> Dict[str, float]:
+    """Aggregate sheet totals under friendly model names."""
+    totals: Dict[str, float] = {}
+    for sheet_id, amount in per_sheet.items():
+        label = MODEL_LOOKUP.get(sheet_id)
+        if not label:
+            label = f"Sheet ...{sheet_id[-8:]}"
+        totals[label] = totals.get(label, 0.0) + amount
+    return totals
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command"""
     welcome_msg = (
@@ -378,9 +396,12 @@ def build_sales_message(user_name: str, data: Dict[str, float], descriptor: str)
         msg = f"💰 {user_name}'s sales for {descriptor}:\n\n"
         msg += f"**Total: ${total:.2f}**\n\n"
         if data['per_sheet']:
-            msg += "Breakdown by sheet:\n"
-            for sheet_id, amount in data['per_sheet'].items():
-                msg += f"• Sheet ...{sheet_id[-8:]}: ${amount:.2f}\n"
+            model_breakdown = build_model_breakdown(data['per_sheet'])
+            msg += "Breakdown by model:\n"
+            for model in MODEL_NAMES:
+                msg += f"• on {model}: ${model_breakdown.pop(model, 0.0):.2f}\n"
+            for leftover_label, amount in model_breakdown.items():
+                msg += f"• on {leftover_label}: ${amount:.2f}\n"
         if debug_info:
             msg += f"\n📊 Debug: {debug_info.get('matching_sales', 0)} sales found"
     else:
